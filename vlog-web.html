@@ -607,3 +607,23 @@ const app = initializeApp(firebaseConfig);
             if(confirm('警告：確定要清空整張分鏡表（包含雲端資料）嗎？這無法復原喔！')) {
                 shots = [];
                 personnelList =
+                    syncToCloud(); // 觸發雲端同步（儲存空狀態）
+                renderAll();   // 重新渲染畫面
+                // 如果人員設定視窗是開啟的，也要一併更新
+                if (!document.getElementById('personnelModal').classList.contains('hidden')) {
+                    renderPersonnelList();
+                }
+            }
+        }
+
+        // ------------------
+        // 初始化載入
+        // ------------------
+        // 當網頁載入完成時，自動從 Firebase 獲取資料
+        window.onload = () => {
+            loadFromFirebase();
+        };
+
+    </script>
+</body>
+</html>
