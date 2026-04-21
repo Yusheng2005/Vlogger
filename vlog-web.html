@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎬 旅遊 Vlog 分鏡表 (雲端同步版)</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 載入 Firebase 核心與 Firestore (使用 compat 版本方便整合單檔 HTML) -->
+    <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        body { font-family: 'PingFang TC', 'Heiti TC', '微軟正黑體', sans-serif; background-color: #f3f4f6; }
+        .table-container { overflow-x: auto; }
+        th, td { min-width: 90px; }
+        /* 拖曳時的視覺回饋 */
+        .dragging { opacity: 0.5; background-color: #e5e7eb; }
+        .drag-over { border-top: 3px solid #3b82f6; }
+        /* 點擊時間軸後，表格跳轉的閃爍效果 */
+        .highlight-row { animation: highlightAnim 2s ease-out; }
+        @keyframes highlightAnim {
+            0% { background-color: #fef08a; } /* Tailwind yellow-200 */
+            100% { background-color: transparent; }
+        }
+        /* 隱藏捲軸但保留捲動功能 (時間軸) */
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="p-4 md:p-8 relative">
+
+    <div class="max-w-7xl mx-auto">
+        <!-- 標題與控制列 -->
+        <div class="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-lg shadow mb-6">
+            <h1 class="text-2xl font-bold text-gray-800 mb-4 md:mb-0">🎬 旅遊 Vlog 分鏡表</h1>
+            <div class="flex flex-wrap justify-center items-center gap-3">
+                <!-- 雲端同步狀態顯示 -->
+                <span id="syncStatus" class="bg-gray-100 text-gray-600 px-3 py-2 rounded shadow-sm text-sm font-bold flex items-center gap-1">
+                    ⏳ 正在連線雲端...
+                </span>
+                <button onclick="openPersonnelModal()" class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded shadow text-sm font-bold">👥 人員設定</button>
+                <button onclick="loadFromFirebase()" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded shadow text-sm">🔄 從雲端重整資料</button>
+                <button onclick="clearAll()" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded shadow text-sm">🗑️ 清空雲端資料</button>
+            </div>
+        </div>
+
+        <!-- 輸入表單 -->
+        <div class="bg-white p-6 rounded-lg shadow mb-6">
+            <h2 id="formTitle" class="text-xl font-bold mb-4 text-gray-700">➕ 新增分鏡</h2>
+            <form id="shotForm" class="grid grid-cols-1 md:grid-cols-4 gap-4" onsubmit="saveShot(event)">
+                
+                <div>
+                    <label class="block text-sm font-bold mb-1 text-gray-600">畫面名稱 <span class="text-red-500">*</span></label>
+                    <input type="text" id="shotName" placeholder="例如: 富士山第一眼" class="w-full border p-2 rounded" required>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-bold mb-1 text-gray-600">這個畫面長度 (秒) <span class="text-red-500">*</span></label>
+                    <input type="number" id="duration" placeholder="例如: 5" min="1" class="w-full border p-2 rounded" required>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-bold mb-1 text-gray-600">地點 <span class="text-red-500">*</span></label>
+                    <input type="text" id="location" placeholder="例如: 富士山車站" class="w-full border p-2 rounded" required>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-bold mb-1 text-gray-600">景別 / 運鏡</label>
+                    <select id="camera" class="w-full border p-2 rounded">
+                        <option value="定接 (固定鏡頭)">定接 (固定鏡頭)</option>
+                        <option value="手持 VLOG (自拍)">手持 VLOG (自拍)</option>
+                        <option value="平移 (Pan)">平移 (Pan)</option>
+                        <option value="推進 (Dolly in)">推進 (Dolly in)</option>
+                        <option value="大遠景 (空拍)">大遠景 (空拍/大景)</option>
+                        <option value="特寫 (Close-up)">特寫 (Close-up)</option>
+                    </select>
+                </div>
+
+                <div class="md:col-span-4">
+                    <label class="block text-sm font-bold mb-1 text-gray-600">畫面呈現方式</label>
+                    <textarea id="visual" rows="2" placeholder="描述畫面裡有什麼？人物在做什麼？" class="w-full border p-2 rounded" required></textarea>
+                </div>
+
+                <div class="md:col-span-1">
+                    <label class="block text-sm font-bold mb-1 text-gray-600">下一幕轉場動畫 (選填)</label>
+                    <input type="text" id="transition" placeholder="例如: 硬切, 甩鏡, 遮罩" class="w-full border p-2 rounded">
+                </div>
+
+                <div class="md:col-span-1">
+                    <label class="block text-sm font-bold mb-1 text-gray-600">聲音 / 旁白</label>
+                    <input type="text" id="audio" placeholder="例如: 現場音 / 講話" class="w-full border p-2 rounded">
+                </div>
+
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-bold mb-1 text-gray-600">備註 / 道具</label>
+                    <input type="text" id="notes" placeholder="例如: 記得戴墨鏡、拿車票" class="w-full border p-2 rounded">
+                </div>
+
+                <!-- 人員勾選區 -->
+                <div class="md:col-span-4 bg-gray-50 p-3 rounded border">
+                    <label class="block text-sm font-bold mb-2 text-gray-700">👥 入鏡/參與人員 (選填，將顯示於表格備註區)</label>
+                    <div id="personnelCheckboxes" class="flex flex-wrap gap-4">
+                        <!-- JS 產生人員 Checkbox -->
+                    </div>
+                </div>
+
+                <div class="md:col-span-4 flex justify-end gap-2 mt-2">
+                    <button type="button" id="cancelEditBtn" onclick="cancelEdit()" class="hidden bg-gray-400 hover:bg-gray-500 text-white px-4 py-2 rounded shadow font-bold">取消修改</button>
+                    <button type="submit" id="submitBtn" class="bg-gray-800 hover:bg-gray-900 text-white px-6 py-2 rounded shadow font-bold">➕ 加到分鏡表 ⬇</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- 視覺化時間軸 -->
+        <div class="bg-white p-4 rounded-lg shadow mb-6">
+            <div class="flex justify-between items-end mb-2">
+                <h2 class="text-lg font-bold text-gray-700">⏱️ 影片總時間軸</h2>
+                <span id="totalTimeDisplay" class="text-sm font-bold text-blue-600 bg-blue-100 px-2 py-1 rounded">總長度: 0 秒</span>
+            </div>
+            <!-- 時間軸容器 -->
+            <div id="timelineContainer" class="flex w-full h-12 bg-gray-100 rounded overflow-x-auto no-scrollbar border border-gray-200">
+                <!-- Javascript 會在這裡產生時間塊 -->
+            </div>
+            <p class="text-xs text-gray-400 mt-2">💡 提示：點擊上方時間區塊，可以直接跳轉到下方對應的畫面。</p>
+        </div>
+
+        <!-- 分鏡列表 -->
+        <div class="bg-white rounded-lg shadow table-container">
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <!-- 標題置中對齊 -->
+                    <tr class="bg-gray-800 text-white text-sm text-center">
+                        <th class="p-3 border-b w-10">≡</th>
+                        <th class="p-3 border-b">連續時間</th>
+                        <th class="p-3 border-b text-yellow-300">畫面名稱</th>
+                        <th class="p-3 border-b">秒數</th>
+                        <th class="p-3 border-b">地點</th>
+                        <th class="p-3 border-b">運鏡/景別</th>
+                        <th class="p-3 border-b min-w-[180px]">畫面呈現</th>
+                        <th class="p-3 border-b">轉場動畫</th>
+                        <th class="p-3 border-b">聲音</th>
+                        <th class="p-3 border-b min-w-[120px]">備註 (含人員)</th>
+                        <th class="p-3 border-b">操作</th>
+                    </tr>
+                </thead>
+                <tbody id="storyboardBody">
+                    <!-- Javascript 會在這裡產生資料 -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- 人員設定 Modal 小視窗 -->
+    <div id="personnelModal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 transition-opacity">
+        <div class="bg-white p-6 rounded-lg shadow-xl w-96 max-w-[90%]">
+            <h2 class="text-xl font-bold mb-4 text-gray-800">👥 人員管理設定</h2>
+            
+            <div class="flex gap-2 mb-4">
+                <input type="text" id="newPersonName" placeholder="輸入人員名字..." class="flex-1 border p-2 rounded focus:outline-none focus:border-blue-500">
+                <button onclick="addPerson()" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded font-bold">新增</button>
+            </div>
+
+            <div class="text-xs text-gray-500 mb-2">💡 點擊「修改」會連同分鏡表裡的名字一起更新喔！</div>
+            <ul id="personnelListUl" class="max-h-60 overflow-y-auto mb-6 border rounded divide-y">
+                <!-- Javascript 產生人員列表 -->
+            </ul>
+
+            <div class="text-right">
+                <button onclick="closePersonnelModal()" class="bg-gray-800 hover:bg-gray-900 text-white px-6 py-2 rounded font-bold shadow">完成並關閉</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /* =========================================================
+           ★★★ 請把你的 Firebase Config 貼在下方 ★★★
+           (只要替換大括號 { ... } 裡面的內容就好)
+           ========================================================= */
+        const firebaseConfig = {
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+const firebaseConfig = {
+  apiKey: "AIzaSyAEgPfL-zvT9dXJMxc9z612MOS646HsbzQ",
+  authDomain: "vlogstoryboard.firebaseapp.com",
+  projectId: "vlogstoryboard",
+  storageBucket: "vlogstoryboard.firebasestorage.app",
+  messagingSenderId: "824016525069",
+  appId: "1:824016525069:web:37e080281bcb7d51d40244"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+        };
+        /* ========================================================= */
+
+        // 初始化 Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        // 初始化資料變數
+        let shots = [];
+        let personnelList =[];
+        
+        let editingIndex = -1; // -1代表新增模式
+        let draggedIndex = -1; // 拖曳索引
+
+        // ------------------
+        // Firebase 雲端互動邏輯
+        // ------------------
+
+        // UI 狀態顯示
+        function updateSyncStatus(status, isError = false) {
+            const statusEl = document.getElementById('syncStatus');
+            if(isError) {
+                statusEl.innerHTML = `❌ ${status}`;
+                statusEl.className = "bg-red-100 text-red-700 px-3 py-2 rounded shadow-sm text-sm font-bold flex items-center gap-1";
+            } else {
+                statusEl.innerHTML = `☁️ ${status}`;
+                statusEl.className = "bg-green-100 text-green-700 px-3 py-2 rounded shadow-sm text-sm font-bold flex items-center gap-1 transition-colors duration-500";
+            }
+        }
+
+        // 從雲端讀取資料
+        function loadFromFirebase() {
+            updateSyncStatus("正在讀取資料...");
+            db.collection("vlog_projects").doc("my_main_project").get()
+            .then((doc) => {
+                if (doc.exists) {
+                    const data = doc.data();
+                    shots = data.shots ||[];
+                    personnelList = data.personnel || [];
+                } else {
+                    shots = [];
+                    personnelList =[];
+                }
+                updateSyncStatus("資料已同步");
+                cancelEdit();
+                renderAll();
+            }).catch((error) => {
+                console.error("載入失敗:", error);
+                updateSyncStatus("雲端讀取失敗 (請檢查資料庫規則設定)", true);
+            });
+        }
+
+        // 儲存資料上雲端
+        function syncToCloud() {
+            updateSyncStatus("儲存中...");
+            db.collection("vlog_projects").doc("my_main_project").set({
+                shots: shots,
+                personnel: personnelList,
+                lastUpdated: firebase.firestore.FieldValue.serverTimestamp() // 記錄最後更新時間
+            }).then(() => {
+                updateSyncStatus("已儲存至雲端");
+            }).catch((error) => {
+                console.error("儲存失敗:", error);
+                updateSyncStatus("雲端儲存失敗", true);
+            });
+        }
+
+        // ------------------
+        // 人員管理系統邏輯
+        // ------------------
+        function openPersonnelModal() {
+            document.getElementById('personnelModal').classList.remove('hidden');
+            renderPersonnelList();
+        }
+
+        function closePersonnelModal() {
+            document.getElementById('personnelModal').classList.add('hidden');
+            renderCheckboxes(); // 關閉時更新表單的勾選區
+        }
+
+        function addPerson() {
+            const input = document.getElementById('newPersonName');
+            const name = input.value.trim();
+            if(!name) return;
+            if(personnelList.includes(name)) {
+                alert('這個名字已經存在囉！');
+                return;
+            }
+            personnelList.push(name);
+            syncToCloud(); // 自動存雲端
+            input.value = '';
+            renderPersonnelList();
+        }
+
+        function editPerson(oldName) {
+            const newName = prompt(`請輸入「${oldName}」的新名字：`, oldName);
+            if(!newName || newName.trim() === '' || newName === oldName) return;
+            if(personnelList.includes(newName)) {
+                alert('這個名字已經存在囉！');
+                return;
+            }
+            
+            // 更新人員清單
+            const index = personnelList.indexOf(oldName);
+            if(index > -1) personnelList[index] = newName.trim();
+
+            // 聯動更新分鏡表裡舊有的名字
+            shots.forEach(shot => {
+                if(shot.personnel && shot.personnel.includes(oldName)) {
+                    const pIndex = shot.personnel.indexOf(oldName);
+                    shot.personnel[pIndex] = newName.trim();
+                }
+            });
+
+            syncToCloud(); // 自動存雲端
+            renderPersonnelList();
+            renderAll(); // 刷新背景的表格
+        }
+
+        function deletePerson(name) {
+            if(confirm(`確定要刪除人員「${name}」嗎？這不會刪除分鏡表裡已標註的名字。`)) {
+                personnelList = personnelList.filter(p => p !== name);
+                syncToCloud(); // 自動存雲端
+                renderPersonnelList();
+            }
+        }
+
+        function renderPersonnelList() {
+            const ul = document.getElementById('personnelListUl');
+            ul.innerHTML = '';
+            if(personnelList.length === 0) {
+                ul.innerHTML = '<li class="p-3 text-gray-400 text-center text-sm">目前沒有人員，請在上方新增</li>';
+                return;
+            }
+            personnelList.forEach(name => {
+                const li = document.createElement('li');
+                li.className = "p-3 flex justify-between items-center hover:bg-gray-50";
+                li.innerHTML = `
+                    <span class="font-bold text-gray-700">${name}</span>
+                    <div>
+                        <button onclick="editPerson('${name}')" class="text-blue-500 hover:text-blue-700 text-sm font-bold mr-3">修改</button>
+                        <button onclick="deletePerson('${name}')" class="text-red-500 hover:text-red-700 text-sm font-bold">刪除</button>
+                    </div>
+                `;
+                ul.appendChild(li);
+            });
+        }
+
+        function renderCheckboxes() {
+            const container = document.getElementById('personnelCheckboxes');
+            container.innerHTML = '';
+            if(personnelList.length === 0) {
+                container.innerHTML = '<span class="text-gray-400 text-sm">尚未設定人員。可點擊上方「👥 人員設定」新增。</span>';
+                return;
+            }
+            personnelList.forEach(name => {
+                const label = document.createElement('label');
+                label.className = "flex items-center cursor-pointer bg-white px-3 py-1.5 rounded border shadow-sm hover:bg-blue-50 transition-colors";
+                label.innerHTML = `
+                    <input type="checkbox" name="personnelCB" value="${name}" class="mr-2 w-4 h-4 text-blue-600 rounded focus:ring-blue-500">
+                    <span class="text-sm font-bold text-gray-700">${name}</span>
+                `;
+                container.appendChild(label);
+            });
+        }
+
+        // ------------------
+        // 分鏡表核心邏輯
+        // ------------------
+        function renderAll() {
+            calculateTimeline();
+            renderTimeline();
+            renderTable();
+            if(editingIndex === -1) {
+                renderCheckboxes(); // 確保平時畫面的 Checkbox 也是最新的
+            }
+        }
+
+        // 重新計算時間
+        function calculateTimeline() {
+            let currentSeconds = 0;
+            shots.forEach(shot => {
+                shot.duration = Number(shot.duration) || 0;
+                shot.start = currentSeconds;
+                shot.end = currentSeconds + shot.duration;
+                currentSeconds = shot.end;
+            });
+        }
+
+        // 渲染視覺化時間軸
+        function renderTimeline() {
+            const container = document.getElementById('timelineContainer');
+            const totalTimeDisplay = document.getElementById('totalTimeDisplay');
+            container.innerHTML = '';
+            
+            const totalDuration = shots.length > 0 ? shots[shots.length - 1].end : 0;
+            const mins = Math.floor(totalDuration / 60);
+            const secs = totalDuration % 60;
+            totalTimeDisplay.innerText = `總長度: ${mins > 0 ? mins + '分 ' : ''}${secs}秒`;
+
+            if(shots.length === 0 || totalDuration === 0) {
+                container.innerHTML = '<div class="flex items-center justify-center w-full text-gray-400 text-sm">新增分鏡後，這裡會產生時間軸</div>';
+                return;
+            }
+
+            const colors =['bg-blue-500', 'bg-indigo-500', 'bg-purple-500', 'bg-teal-500', 'bg-cyan-500'];
+
+            shots.forEach((shot, index) => {
+                const widthPercent = (shot.duration / totalDuration) * 100;
+                const block = document.createElement('div');
+                const bgColor = colors[index % colors.length];
+                
+                block.className = `h-full ${bgColor} border-r border-white/50 flex flex-col items-center justify-center text-white text-xs cursor-pointer hover:opacity-80 transition relative group flex-shrink-0`;
+                block.style.width = `max(${widthPercent}%, 40px)`; // 最小寬度
+                
+                const displayName = shot.shotName || shot.location;
+                
+                block.innerHTML = `
+                    <span class="truncate px-1 w-full text-center font-bold">${displayName}</span>
+                    <span class="text-[10px] opacity-80">${shot.duration}s</span>
+                    
+                    <div class="absolute bottom-full mb-2 hidden group-hover:block bg-gray-800 text-white text-xs p-2 rounded shadow-lg whitespace-nowrap z-10 border border-gray-600">
+                        <p class="font-bold text-yellow-300">${shot.start}s - ${shot.end}s</p>
+                        <p class="mt-1">${shot.visual.substring(0, 20)}${shot.visual.length > 20 ? '...' : ''}</p>
+                    </div>
+                `;
+                block.onclick = () => scrollToShot(index);
+                container.appendChild(block);
+            });
+        }
+
+        // 渲染表格
+        function renderTable() {
+            const tbody = document.getElementById('storyboardBody');
+            tbody.innerHTML = '';
+
+            if(shots.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="11" class="text-center p-6 text-gray-400">目前還沒有分鏡，趕快新增第一個吧！</td></tr>';
+                return;
+            }
+
+            shots.forEach((shot, index) => {
+                const tr = document.createElement('tr');
+                tr.id = `shot-row-${index}`;
+                tr.className = "border-b hover:bg-gray-50 bg-white transition-colors cursor-move";
+                
+                tr.draggable = true;
+                tr.ondragstart = (e) => handleDragStart(e, index);
+                tr.ondragover = (e) => handleDragOver(e);
+                tr.ondragleave = (e) => handleDragLeave(e);
+                tr.ondrop = (e) => handleDrop(e, index);
+
+                // 處理人員與備註顯示
+                let personnelText = '';
+                if(shot.personnel && shot.personnel.length > 0) {
+                    personnelText = `<div class="text-xs text-blue-700 bg-blue-100 inline-block px-1.5 py-0.5 rounded font-bold mb-1">[人員: ${shot.personnel.join(', ')}]</div><br>`;
+                }
+
+                tr.innerHTML = `
+                    <td class="p-3 text-gray-300 text-center cursor-move" title="按住拖曳排序">☰</td>
+                    <td class="p-3 font-bold text-gray-700 text-center whitespace-nowrap">${shot.start} - ${shot.end} 秒</td>
+                    <td class="p-3 font-bold text-green-700 text-center">${shot.shotName}</td>
+                    <td class="p-3 text-center bg-gray-100 rounded font-bold">${shot.duration}s</td>
+                    <td class="p-3 font-semibold text-blue-600 text-center">${shot.location}</td>
+                    <td class="p-3 text-center"><span class="bg-gray-200 px-2 py-1 rounded text-xs whitespace-nowrap">${shot.camera}</span></td>
+                    <td class="p-3 whitespace-pre-wrap text-sm">${shot.visual}</td>
+                    <td class="p-3 text-sm text-purple-600 font-semibold text-center">${shot.transition || '-'}</td>
+                    <td class="p-3 text-sm text-gray-600">${shot.audio || '-'}</td>
+                    <td class="p-3 text-sm text-gray-600">${personnelText}${shot.notes || ''}</td>
+                    <td class="p-3 text-center whitespace-nowrap">
+                        <button onclick="editShot(${index})" class="text-blue-500 hover:text-blue-700 font-bold mr-2">✏️</button>
+                        <button onclick="deleteShot(${index})" class="text-red-500 hover:text-red-700 font-bold">🗑️</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // 儲存表單資料
+        function saveShot(e) {
+            e.preventDefault();
+            
+            const checkedPersonnel = Array.from(document.querySelectorAll('input[name="personnelCB"]:checked')).map(cb => cb.value);
+
+            const shotData = {
+                shotName: document.getElementById('shotName').value,
+                duration: document.getElementById('duration').value,
+                location: document.getElementById('location').value,
+                camera: document.getElementById('camera').value,
+                visual: document.getElementById('visual').value,
+                transition: document.getElementById('transition').value,
+                audio: document.getElementById('audio').value,
+                notes: document.getElementById('notes').value,
+                personnel: checkedPersonnel
+            };
+
+            if (editingIndex >= 0) {
+                shots[editingIndex] = shotData;
+                cancelEdit(); 
+            } else {
+                shots.push(shotData);
+                document.getElementById('shotForm').reset();
+                renderCheckboxes(); // 清空勾選狀態
+            }
+
+            syncToCloud(); // 觸發雲端儲存
+            renderAll();
+        }
+
+        // 進入編輯模式
+        function editShot(index) {
+            editingIndex = index;
+            const shot = shots[index];
+            
+            document.getElementById('shotName').value = shot.shotName || '';
+            document.getElementById('duration').value = shot.duration;
+            document.getElementById('location').value = shot.location;
+            document.getElementById('camera').value = shot.camera;
+            document.getElementById('visual').value = shot.visual;
+            document.getElementById('transition').value = shot.transition || '';
+            document.getElementById('audio').value = shot.audio || '';
+            document.getElementById('notes').value = shot.notes || '';
+
+            renderCheckboxes();
+            if(shot.personnel) {
+                const checkboxes = document.querySelectorAll('input[name="personnelCB"]');
+                checkboxes.forEach(cb => {
+                    if(shot.personnel.includes(cb.value)) cb.checked = true;
+                });
+            }
+
+            document.getElementById('formTitle').innerHTML = `✏️ 編輯分鏡 <span class="text-blue-500 text-sm">(修改第 ${index + 1} 筆)</span>`;
+            document.getElementById('submitBtn').innerHTML = "💾 儲存修改";
+            document.getElementById('submitBtn').classList.replace('bg-gray-800', 'bg-blue-600');
+            document.getElementById('submitBtn').classList.replace('hover:bg-gray-900', 'hover:bg-blue-700');
+            document.getElementById('cancelEditBtn').classList.remove('hidden');
+
+            document.getElementById('shotForm').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // 取消編輯狀態
+        function cancelEdit() {
+            editingIndex = -1;
+            document.getElementById('shotForm').reset();
+            renderCheckboxes(); 
+            document.getElementById('formTitle').innerHTML = "➕ 新增分鏡";
+            document.getElementById('submitBtn').innerHTML = "➕ 加到分鏡表 ⬇";
+            document.getElementById('submitBtn').classList.replace('bg-blue-600', 'bg-gray-800');
+            document.getElementById('submitBtn').classList.replace('hover:bg-blue-700', 'hover:bg-gray-900');
+            document.getElementById('cancelEditBtn').classList.add('hidden');
+        }
+
+        function deleteShot(index) {
+            if(confirm('確定要刪除這個分鏡嗎？')) {
+                shots.splice(index, 1);
+                if(editingIndex === index) cancelEdit();
+                syncToCloud(); // 觸發雲端儲存
+                renderAll();
+            }
+        }
+
+        /* --- 拖曳排序邏輯 --- */
+        function handleDragStart(e, index) {
+            draggedIndex = index;
+            e.target.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault(); 
+            const tr = e.target.closest('tr');
+            if(tr && tr.id.startsWith('shot-row-')) {
+                tr.classList.add('drag-over');
+            }
+        }
+
+        function handleDragLeave(e) {
+            const tr = e.target.closest('tr');
+            if(tr) tr.classList.remove('drag-over');
+        }
+
+        function handleDrop(e, targetIndex) {
+            e.preventDefault();
+            const tr = e.target.closest('tr');
+            if(tr) tr.classList.remove('drag-over');
+
+            if (draggedIndex === targetIndex || draggedIndex === -1) return;
+
+            const movedItem = shots.splice(draggedIndex, 1)[0];
+            shots.splice(targetIndex, 0, movedItem);
+
+            draggedIndex = -1;
+            syncToCloud(); // 觸發雲端儲存
+            renderAll();
+        }
+
+        /* --- 點擊跳轉邏輯 --- */
+        function scrollToShot(index) {
+            const row = document.getElementById(`shot-row-${index}`);
+            if (row) {
+                row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                row.classList.remove('highlight-row');
+                void row.offsetWidth; 
+                row.classList.add('highlight-row');
+            }
+        }
+
+        function clearAll() {
+            if(confirm('警告：確定要清空整張分鏡表（包含雲端資料）嗎？這無法復原喔！')) {
+                shots = [];
+                personnelList =
