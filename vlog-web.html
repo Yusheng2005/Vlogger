@@ -606,7 +606,7 @@ const app = initializeApp(firebaseConfig);
         function clearAll() {
             if(confirm('警告：確定要清空整張分鏡表（包含雲端資料）嗎？這無法復原喔！')) {
                 shots = [];
-                personnelList =
+                personnelList = [];
                     syncToCloud(); // 觸發雲端同步（儲存空狀態）
                 renderAll();   // 重新渲染畫面
                 // 如果人員設定視窗是開啟的，也要一併更新
